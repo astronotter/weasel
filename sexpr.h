@@ -1,75 +1,39 @@
-#include <list>
 #include <string>
 #include <istream>
 #include <variant>
+#include <vector>
+#include <functional>
 
-// Tokens are split into two categories: atomic and list. Atomic tokens are
-// values such as numbers and strings, and lists are compound tokens formed by
-// an ordered set of other tokens. 
+#pragma once
 
-using token = std::variant<class token_list, class token_atomic>;
+namespace sexpr {
 
-class token_atomic {
-public:
-    token_atomic(std::string &&value)
-        : m_value{std::move(value)} {}
-    
-    const std::string &value() const { return m_value; }
-private:
-    std::string m_value;
-};
+// Objects are split into two categories: atomic and list. Atomics are values
+// such as numbers and strings, and lists are unordered sets of objects other
+// objects.
 
-class token_list {
-private:
-    // Children are stored as a linked list to avoid insertion invalidating the
-    // parent pointers of previously inserted children. This could be changed to
-    // a vector at the cost of having to update pointers if fragmentation is a
-    // concern.
-    using container_type = std::list<token>;
-    
-public:
-    token_list()
-        : m_parent{nullptr} {}
-    
-    using iterator = container_type::iterator;
-    using const_iterator = container_type::const_iterator;
-    
-    // Create a child token (atomic or list specified by TokenT) with the given
-    // parameters forwarded to the constructor.
-    
-    template <typename TokenT, typename... Args>
-    TokenT &emplace_back(Args &&...args) {
-        m_children.push_back(token{TokenT{std::forward<Args>(args)...}});
-        if (auto *arg = std::get_if<token_list>(&m_children.back()))
-            arg->m_parent = this;
-        return std::get<TokenT>(m_children.back());
-    }
-        
-    iterator begin() { return m_children.begin(); }
-    const_iterator begin() const { return m_children.begin(); }
-    const_iterator cbegin() const { return m_children.cbegin(); }
-    iterator end() { return m_children.end(); }
-    const_iterator end() const { return m_children.end(); }
-    const_iterator cend() const { return m_children.cend(); }
+using atomic = std::string;
+using object = std::variant<class list, atomic>;
 
-    // While both types of token have a parent, only compound tokens track this,
-    // since atomic tokens will almost always be obtained through thier parent
-    // anyway.
-    token_list *parent() const { return m_parent; }    
-private:
-    token_list *m_parent;
-    container_type m_children;
-};
+// List is simply a proxy class for a vector of objects. This is necessary since
+// type aliases cannot refer to themselves.
+
+// One caveat to note is that this should never be destructed through a pointer
+// to vector, since vector does not have a virtual destructor! Since this seems
+// a relatively unlikely scenario the benefit of concision has been deemed to
+// outweighs the risk.
+
+class list : public std::vector<object> {};
 
 // Construct a (possibly compound) Lisp object based on a character stream.
 // Loosely based on the specification provided in chapter 22 of the Common Lisp
 // (second edition) but with most of the flexibility removed in the interest of
 // efficiency.
 
-token_list read(std::istream &is)
+list read(std::istream &is)
 {
-    token_list root;
-    token_list *parent = &root;
+    list root;
+    std::vector<std::reference_wrapper<list>> ctx = { root }; 
     
     std::string accum;
     
@@ -85,15 +49,15 @@ token_list read(std::istream &is)
             ll = is.tellg();
         }
         
+        auto &top = ctx.back().get();
         if (std::isspace(c))
             ;
-        else if (c == '(')
-            parent = &parent->emplace_back<token_list>();
-        else if (c == ')') {
-            parent = parent->parent();
-            if (!parent)
-                throw std::runtime_error("Underflow!");
+        else if (c == '(') {
+            auto &back = top.emplace_back(list{});
+            ctx.push_back(*std::get_if<list>(&back));
         }
+        else if (c == ')')
+            ctx.pop_back();  // May throw on underflow.
         else {
             accum.push_back(c);
             continue;
@@ -103,7 +67,7 @@ token_list read(std::istream &is)
         // encountered so we can create a token with what was in the
         // accumulation buffer and start a new token.
         if (!accum.empty()) {
-            parent->emplace_back<token_atomic>(std::move(accum));
+            top.push_back(std::move(accum));
             accum.clear();
         }
     }
@@ -114,14 +78,16 @@ token_list read(std::istream &is)
 // the specification provided in chapter 22 of the Common Lisp (second edition)
 // but with most of the flexibility removed in the interest of efficiency.
 
-std::ostream &print(std::ostream &out, const token_list &root)
+std::ostream &print(std::ostream &out, const list &root)
 {   
     out << "(";
     for (const auto &child : root) {
-        if (auto *arg = std::get_if<token_list>(&child))
+        if (auto *arg = std::get_if<list>(&child))
             print(out, *arg);
-        else if (auto *arg = std::get_if<token_atomic>(&child))
-            out << " " << arg->value();
+        else if (auto *arg = std::get_if<atomic>(&child))
+            out << *arg << " ";
     }
     return out << ")";
 }
+
+}; // sexpr
