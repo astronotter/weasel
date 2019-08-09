@@ -125,9 +125,13 @@ native_function compile(const list &root)
 
     for (;;) {
         if (frames.back().it == frames.back().parent.get().end()) {
+            auto op = builtins.find(frames.back().parent.get().op);
+            if (op == builtins.end())
+                throw std::runtime_error("compile: Unknown function.");
+            
             out << push_rdi;
             out << push_rsi;
-            out << mov_rax_imm64 << imm<uint64_t>{builtins.find(frames.back().parent.get().op)->second};
+            out << mov_rax_imm64 << imm<uint64_t>{op->second};
             out << call_rax;
             out << pop_rsi;
             out << pop_rdi;
